@@ -1,0 +1,15 @@
+name: Source Workflow
+
+on:
+  workflow_dispatch:
+  release:
+    types: [prereleased]
+
+run-name: ${{ github.actor }} is testing out GitHub Actions  🚀
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: get the prerelease tag
+        run: echo "GITHUB_REFNAME = ${GITHUB_REF_NAME}"
