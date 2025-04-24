@@ -10,11 +10,7 @@ run-name: ${{ github.actor }} is testing out GitHub Actions  🚀
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    env:
-      NEST_VERSION: ${{ github.ref_name}}
     steps:
-      - name: get the prerelease tag
-        run: echo "GITHUB_REFNAME = ${GITHUB_REF_NAME}"
       - name: trigger the automated test in another repo
         uses: peter-evans/repository-dispatch@v3
         with:
