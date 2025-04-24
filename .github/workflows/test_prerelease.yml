@@ -10,8 +10,6 @@ run-name: ${{ github.actor }} is testing out GitHub Actions  🚀
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    env:
-      NEST_VERSION: ${GITHUB_REF_NAME}
     steps:
       - name: get the prerelease tag
         run: echo "GITHUB_REFNAME = ${GITHUB_REF_NAME}"
@@ -20,6 +18,6 @@ jobs:
         with:
           repository_owner: nest
           repository_name: nest-simulator-examples
-          new_branch_name: $NEST_VERSION
+          new_branch_name: ${{ github.ref }}
           access_token: ${{ secrets.API_TOKEN_GITHUB}}
 
