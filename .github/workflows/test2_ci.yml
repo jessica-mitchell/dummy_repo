@@ -15,4 +15,13 @@ on:
           - master
 
 
+jobs:
+  test-dropdown:
+    runs-on: ubuntu-latest
 
+    env:
+      NAME: ${{inputs.nest_version }}
+      DISPLAY_NAME: "EBRAINS-24.04"
+    steps:
+      name: display
+      run: echo "$NAME"
