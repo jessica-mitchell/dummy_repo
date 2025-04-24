@@ -23,5 +23,5 @@ jobs:
       NAME: ${{inputs.nest_version }}
       DISPLAY_NAME: "EBRAINS-24.04"
     steps:
-      name: display
-      run: echo "$NAME"
+      - name: display
+        run: echo "$NAME"
