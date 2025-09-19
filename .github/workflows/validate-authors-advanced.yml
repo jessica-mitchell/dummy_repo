@@ -1,0 +1,163 @@
+name: Validate Commit Authors (Advanced)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate (from jessica-mitchell/dummy_repo)'
+        required: true
+        type: string
+      test_mode:
+        description: 'Test mode (will not post comments to the actual PR)'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  validate-authors:
+    name: Validate Commit Authors
+    runs-on: ubuntu-latest
+    
+    # Only run if the PR is not a draft
+    if: github.event.pull_request.draft == false
+    
+    outputs:
+      validation-passed: ${{ steps.validate.outputs.passed }}
+      validation-message: ${{ steps.validate.outputs.message }}
+    
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history to get all commits
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyyaml requests
+    
+    - name: Download validation script
+      run: |
+        curl -o validate_commit_authors.py https://raw.githubusercontent.com/nest/nest-release-tools/main/scripts/validate_commit_authors.py
+        chmod +x validate_commit_authors.py
+    
+    - name: Validate commit authors
+      id: validate
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Run validation and capture both output and exit code
+        set +e  # Don't exit on error
+        python validate_commit_authors.py \
+          --pr-number ${{ github.event.pull_request.number }} \
+          --owner ${{ github.repository_owner }} \
+          --repo ${{ github.event.repository.name }} \
+          --token ${{ env.GITHUB_TOKEN }} \
+          --tools-owner nest \
+          --tools-repo nest-release-tools \
+          --output-format json > validation_result.json 2>&1
+        VALIDATION_EXIT_CODE=$?
+        set -e  # Re-enable exit on error
+        
+        # Read the validation result
+        if [ -f validation_result.json ]; then
+          VALIDATION_PASSED=$(python -c "import json; data=json.load(open('validation_result.json')); print('true' if data['is_valid'] else 'false')")
+          VALIDATION_MESSAGE=$(python -c "import json; data=json.load(open('validation_result.json')); print(data.get('message', 'Validation completed'))")
+        else
+          VALIDATION_PASSED="false"
+          VALIDATION_MESSAGE="Validation script failed to run"
+        fi
+        
+        # Set outputs
+        echo "passed=$VALIDATION_PASSED" >> $GITHUB_OUTPUT
+        echo "message=$VALIDATION_MESSAGE" >> $GITHUB_OUTPUT
+        
+        # Also set as environment variable for next step
+        echo "VALIDATION_PASSED=$VALIDATION_PASSED" >> $GITHUB_ENV
+        echo "VALIDATION_MESSAGE=$VALIDATION_MESSAGE" >> $GITHUB_ENV
+    
+    - name: Comment on PR with validation results
+      if: always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let validationResult = { is_valid: false, missing_authors: [], errors: [] };
+          
+          try {
+            if (fs.existsSync('validation_result.json')) {
+              validationResult = JSON.parse(fs.readFileSync('validation_result.json', 'utf8'));
+            }
+          } catch (error) {
+            console.log('Could not read validation result:', error.message);
+          }
+          
+          const isValid = validationResult.is_valid;
+          const missingAuthors = validationResult.missing_authors || [];
+          const errors = validationResult.errors || [];
+          
+          // Create comment body
+          let commentBody = '## 🔍 Commit Author Validation\n\n';
+          
+          if (isValid) {
+            commentBody += '✅ **All commit authors are valid!**\n\n';
+            commentBody += 'All commit authors in this PR have been verified against the NEST author database.';
+          } else {
+            commentBody += '❌ **Some commit authors are not valid!**\n\n';
+            
+            if (missingAuthors.length > 0) {
+              commentBody += 'The following commit authors are not found in the NEST author database:\n\n';
+              
+              for (const author of missingAuthors) {
+                commentBody += `- **${author.name}** <${author.email}>\n`;
+                if (author.github_username) {
+                  commentBody += `  - GitHub: @${author.github_username}\n`;
+                }
+                if (author.mapped_github_handle) {
+                  commentBody += `  - Mapped to: @${author.mapped_github_handle}\n`;
+                }
+                if (author.error) {
+                  commentBody += `  - Error: ${author.error}\n`;
+                }
+                commentBody += '\n';
+              }
+            }
+            
+            if (errors.length > 0) {
+              commentBody += '**Additional errors:**\n';
+              for (const error of errors) {
+                commentBody += `- ${error}\n`;
+              }
+              commentBody += '\n';
+            }
+            
+            commentBody += '**Action Required:** Please ensure all commit authors are properly registered in the NEST author database before merging this PR.\n\n';
+            commentBody += 'To add an author, please contact the NEST maintainers or update the following files in the `nest/nest-release-tools` repository:\n';
+            commentBody += '- `data/realnames.yaml` - for GitHub handles\n';
+            commentBody += '- `data/gitlognames.yaml` - for git log names and emails\n\n';
+            commentBody += '**This PR cannot be merged until all commit authors are validated.**';
+          }
+          
+          // Post comment
+          await github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: commentBody
+          });
+    
+    - name: Fail if validation failed
+      if: steps.validate.outputs.passed == 'false'
+      run: |
+        echo "❌ Commit author validation failed!"
+        echo "Please check the PR comments for details on which authors need to be added to the database."
+        exit 1

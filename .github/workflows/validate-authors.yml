@@ -1,0 +1,139 @@
+name: Validate Commit Authors
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate (from jessica-mitchell/dummy_repo)'
+        required: true
+        type: string
+      test_mode:
+        description: 'Test mode (will not post comments to the actual PR)'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  validate-authors:
+    name: Validate Commit Authors
+    runs-on: ubuntu-latest
+    
+    # Only run if the PR is not a draft (for PR triggers)
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history to get all commits
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyyaml requests
+    
+    - name: Download validation script
+      run: |
+        curl -o validate_commit_authors.py https://raw.githubusercontent.com/nest/nest-release-tools/main/scripts/validate_commit_authors.py
+        chmod +x validate_commit_authors.py
+    
+    - name: Set PR number for validation
+      id: set-pr-number
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "pr_number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+          echo "test_mode=${{ github.event.inputs.test_mode }}" >> $GITHUB_OUTPUT
+          echo "target_owner=jessica-mitchell" >> $GITHUB_OUTPUT
+          echo "target_repo=dummy_repo" >> $GITHUB_OUTPUT
+        else
+          echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "test_mode=false" >> $GITHUB_OUTPUT
+          echo "target_owner=${{ github.repository_owner }}" >> $GITHUB_OUTPUT
+          echo "target_repo=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Validate commit authors
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        echo "🔍 Validating PR #${{ steps.set-pr-number.outputs.pr_number }} in ${{ steps.set-pr-number.outputs.target_owner }}/${{ steps.set-pr-number.outputs.target_repo }}"
+        echo "Test mode: ${{ steps.set-pr-number.outputs.test_mode }}"
+        
+        python validate_commit_authors.py \
+          --pr-number ${{ steps.set-pr-number.outputs.pr_number }} \
+          --owner ${{ steps.set-pr-number.outputs.target_owner }} \
+          --repo ${{ steps.set-pr-number.outputs.target_repo }} \
+          --token ${{ env.GITHUB_TOKEN }} \
+          --tools-owner nest \
+          --tools-repo nest-release-tools
+    
+    - name: Comment on PR with validation results
+      if: always() && steps.set-pr-number.outputs.test_mode == 'false'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { execSync } = require('child_process');
+          
+          try {
+            // Run validation and capture output
+            const output = execSync(`python validate_commit_authors.py \
+              --pr-number ${{ steps.set-pr-number.outputs.pr_number }} \
+              --owner ${{ steps.set-pr-number.outputs.target_owner }} \
+              --repo ${{ steps.set-pr-number.outputs.target_repo }} \
+              --token ${{ secrets.GITHUB_TOKEN }} \
+              --tools-owner nest \
+              --tools-repo nest-release-tools`, 
+              { encoding: 'utf-8' });
+            
+            const isValid = output.includes('✅ All commit authors are valid!');
+            
+            // Create comment body
+            let commentBody = '## 🔍 Commit Author Validation\n\n';
+            
+            if (isValid) {
+              commentBody += '✅ **All commit authors are valid!**\n\n';
+              commentBody += 'All commit authors in this PR have been verified against the NEST author database.';
+            } else {
+              commentBody += '❌ **Some commit authors are not valid!**\n\n';
+              commentBody += 'The following commit authors are not found in the NEST author database:\n\n';
+              commentBody += '```\n' + output + '\n```\n\n';
+              commentBody += '**Action Required:** Please ensure all commit authors are properly registered in the NEST author database before merging this PR.\n\n';
+              commentBody += 'To add an author, please contact the NEST maintainers or update the following files in the `nest/nest-release-tools` repository:\n';
+              commentBody += '- `data/realnames.yaml` - for GitHub handles\n';
+              commentBody += '- `data/gitlognames.yaml` - for git log names and emails';
+            }
+            
+            // Post comment
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+            
+          } catch (error) {
+            // If validation fails, post error comment
+            const commentBody = `## 🔍 Commit Author Validation\n\n❌ **Validation failed!**\n\n\`\`\`\n${error.message}\n\`\`\`\n\nPlease check the workflow logs for more details.`;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+          }
+    
+    - name: Display test results
+      if: always() && steps.set-pr-number.outputs.test_mode == 'true'
+      run: |
+        echo "🧪 Test Mode - Results displayed in workflow logs only"
+        echo "PR #${{ steps.set-pr-number.outputs.pr_number }} validation completed"
+        echo "Check the 'Validate commit authors' step above for detailed results"
